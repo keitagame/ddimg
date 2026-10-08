@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>r/place 画像転送ツール</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .card {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: inline-block;
+            width: 140px;
+            font-weight: bold;
+        }
+        input[type="number"], input[type="file"] {
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #fff;
+            background-color: #007bff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        button.stop {
+            background-color: #dc3545;
+        }
+        .preview-container {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+        .preview-box {
+            text-align: center;
+        }
+        canvas {
+            border: 1px solid #000;
+            max-width: 300px;
+            max-height: 300px;
+            image-rendering: pixelated;
+        }
+        progress {
+            width: 100%;
+            height: 20px;
+            margin-top: 10px;
+        }
+        #log {
+            background: #1e1e1e;
+            color: #00ff00;
+            font-family: monospace;
+            padding: 10px;
+            height: 15px;
+            overflow-y: auto;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>r/place 画像自動描画ツール</h1>
+
+    <div class="card">
+        <h3>1. 画像と配置設定</h3>
+        <div class="form-group">
+            <label for="imageInput">画像を選択:</label>
+            <input type="file" id="imageInput" accept="image/*">
+        </div>
+        <div class="form-group">
+            <label for="posX">配置 X 座標 (0~1999):</label>
+            <input type="number" id="posX" value="0" min="0" max="1999">
+        </div>
+        <div class="form-group">
+            <label for="posY">配置 Y 座標 (0~1999):</label>
+            <input type="number" id="posY" value="0" min="0" max="1999">
+        </div>
+        <div class="form-group">
+            <label for="imgWidth">描画幅 (px):</label>
+            <input type="number" id="imgWidth" placeholder="自動 (元サイズ)" min="1" max="2000">
+        </div>
+        <div class="form-group">
+            <label for="imgHeight">描画高さ (px):</label>
+            <input type="number" id="imgHeight" placeholder="自動 (元サイズ)" min="1" max="2000">
+        </div>
+        <div class="form-group">
+            <label for="interval">送信間隔 (ms):</label>
+            <input type="number" id="interval" value="250" min="200">
+            <small>(※安全のため250ms以上推奨。60秒300回制限対策)</small>
+        </div>
+        <div class="form-group">
+            <label for="skipTransparent">透明ピクセル:</label>
+            <input type="checkbox" id="skipTransparent" checked> 透明部分をスキップする
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>2. プレビュー</h3>
+        <div class="preview-container">
+            <div class="preview-box">
+                <div>元画像</div>
+                <canvas id="origCanvas"></canvas>
+            </div>
+            <div class="preview-box">
+                <div>64色変換後 (送信イメージ)</div>
+                <canvas id="palCanvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>3. 描画実行</h3>
+        <button id="startBtn" disabled>描画開始</button>
+        <button id="stopBtn" class="stop" disabled>停止</button>
+
+        <div style="margin-top: 15px;">
+            <div>進捗: <span id="statusText">待機中</span></div>
+            <progress id="progressBar" value="0" max="100"></progress>
+        </div>
+        <div style="margin-top: 10px;">
+            <div id="log">ログがここに表示されます...</div>
+        </div>
+    </div>
+
+<script>
+// 仕様定義の64色パレット (HEX)
+const PALETTE_HEX = [
+    '#ffffff', '#000000', '#1a1a1a', '#333333', '#555555', '#777777', '#999999', '#bbbbbb',
+    '#dddddd', '#2c1e13', '#4e3322', '#784d31', '#a66e4e', '#cf9b7a', '#e8ccb8', '#f7f0eb',
+    '#3b000b', '#6b0014', '#9e0d21', '#d32f2f', '#f44336', '#ff7961', '#ffb2b2', '#ffebee',
+    '#4a0033', '#7b0052', '#ad1457', '#e91e63', '#f06292', '#f8bbd0', '#8e24aa', '#ce93d8',
+    '#1a237e', '#283593', '#3f51b5', '#5c6bc0', '#9fa8da', '#0d47a1', '#1976d2', '#42a5f5',
+    '#90caf9', '#e3f2fd', '#006064', '#00838f', '#00acc1', '#26c6da', '#80deea', '#e0f7fa',
+    '#004d40', '#00796b', '#009688', '#4db6ac', '#80cbc4', '#1b5e20', '#388e3c', '#4caf50',
+    '#81c784', '#c8e6c9', '#f57f17', '#fbc02d', '#ffeb3b', '#fff59d', '#e65100', '#ff9800'
+];
+
+// HEX -> RGB 変換
+const PALETTE_RGB = PALETTE_HEX.map(hex => {
+    const num = parseInt(hex.slice(1), 16);
+    return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+});
+
+let loadedImage = null;
+let isRunning = false;
+let shouldStop = false;
+
+// RGBから最も近いパレット色インデックス(0~63)を計算
+function getClosestColorIndex(r, g, b) {
+    let minDistance = Infinity;
+    let closestIndex = 0;
+
+    for (let i = 0; i < PALETTE_RGB.length; i++) {
+        const [pr, pg, pb] = PALETTE_RGB[i];
+        // ユークリッド距離の自乗で比較
+        const dist = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
+        if (dist < minDistance) {
+            minDistance = dist;
+            closestIndex = i;
+        }
+    }
+    return closestIndex;
+}
+
+// 画像の読み込みとプレビュー更新
+document.getElementById('imageInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+            loadedImage = img;
+            updatePreview();
+            document.getElementById('startBtn').disabled = false;
+        };
+        img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+});
+
+// 入力値変更時にプレビューを更新
+['posX', 'posY', 'imgWidth', 'imgHeight'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+        if (loadedImage) updatePreview();
+    });
+});
+
+function updatePreview() {
+    if (!loadedImage) return;
+
+    const width = parseInt(document.getElementById('imgWidth').value) || loadedImage.width;
+    const height = parseInt(document.getElementById('imgHeight').value) || loadedImage.height;
+
+    const origCanvas = document.getElementById('origCanvas');
+    const palCanvas = document.getElementById('palCanvas');
+
+    origCanvas.width = palCanvas.width = width;
+    origCanvas.height = palCanvas.height = height;
+
+    const ctxOrig = origCanvas.getContext('2d');
+    const ctxPal = palCanvas.getContext('2d');
+
+    // 元画像描画
+    ctxOrig.drawImage(loadedImage, 0, 0, width, height);
+
+    // 減色描画
+    const imgData = ctxOrig.getImageData(0, 0, width, height);
+    const data = imgData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        if (a < 128 && document.getElementById('skipTransparent').checked) {
+            data[i + 3] = 0; // 透明化
+            continue;
+        }
+        const cIdx = getClosestColorIndex(data[i], data[i + 1], data[i + 2]);
+        const [pr, pg, pb] = PALETTE_RGB[cIdx];
+        data[i] = pr;
+        data[i + 1] = pg;
+        data[i + 2] = pb;
+        data[i + 3] = 255;
+    }
+
+    ctxPal.putImageData(imgData, 0, 0);
+}
+
+// ログ出力関数
+function log(msg) {
+    const logEl = document.getElementById('log');
+    logEl.textContent = msg;
+}
+
+// スリープ処理
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 描画メインループ
+document.getElementById('startBtn').addEventListener('click', async () => {
+    if (!loadedImage || isRunning) return;
+
+    const startX = parseInt(document.getElementById('posX').value);
+    const startY = parseInt(document.getElementById('posY').value);
+    const interval = parseInt(document.getElementById('interval').value) || 250;
+    const skipTransparent = document.getElementById('skipTransparent').checked;
+
+    const palCanvas = document.getElementById('palCanvas');
+    const ctx = palCanvas.getContext('2d');
+    const imgData = ctx.getImageData(0, 0, palCanvas.width, palCanvas.height);
+    const data = imgData.data;
+
+    const width = palCanvas.width;
+    const height = palCanvas.height;
+    const totalPixels = width * height;
+
+    isRunning = true;
+    shouldStop = false;
+
+    document.getElementById('startBtn').disabled = true;
+    document.getElementById('stopBtn').disabled = false;
+
+    let processed = 0;
+    let successCount = 0;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            if (shouldStop) {
+                log('処理が中断されました。');
+                finish();
+                return;
+            }
+
+            const targetX = startX + x;
+            const targetY = startY + y;
+            processed++;
+
+            // キャンバス外チェック
+            if (targetX < 0 || targetX >= 2000 || targetY < 0 || targetY >= 2000) {
+                continue;
+            }
+
+            const i = (y * width + x) * 4;
+            const a = data[i + 3];
+
+            // 透明スキップ
+            if (skipTransparent && a === 0) {
+                continue;
+            }
+
+            const colorIdx = getClosestColorIndex(data[i], data[i + 1], data[i + 2]);
+
+            // POSTリクエスト送信
+            try {
+                const params = new URLSearchParams({
+                    a: 'place',
+                    x: String(targetX),
+                    y: String(targetY),
+                    c: String(colorIdx)
+                });
+
+                const res = await fetch('place.cgi', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: params.toString()
+                });
+
+                if (res.status === 204) {
+                    successCount++;
+                    log(`成功: (${targetX}, ${targetY}) -> Color:${colorIdx} [${successCount}/${processed}]`);
+                } else if (res.status === 429) {
+                    log(`エラー: レート制限にかかりました (429)。一時停止します...`);
+                    await sleep(10000); // 429発生時は10秒待機
+                } else {
+                    log(`エラー HTTP ${res.status}: (${targetX}, ${targetY})`);
+                }
+            } catch (err) {
+                log(`通信エラー: ${err.message}`);
+            }
+
+            // 進捗更新
+            const progress = Math.floor((processed / totalPixels) * 100);
+            document.getElementById('progressBar').value = progress;
+            document.getElementById('statusText').textContent = `${progress}% (${processed}/${totalPixels} ピクセル)`;
+
+            // レート制御用のウェイト
+            await sleep(interval);
+        }
+    }
+
+    log(`描画完了！ 成功ピクセル数: ${successCount}`);
+    finish();
+
+    function finish() {
+        isRunning = false;
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = true;
+    }
+});
+
+// 停止ボタン処理
+document.getElementById('stopBtn').addEventListener('click', () => {
+    shouldStop = true;
+});
+</script>
+</body>
+</html>
